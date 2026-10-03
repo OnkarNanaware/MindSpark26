@@ -821,6 +821,305 @@ def scan_zip():
             cleanup_workspace(workspace)
 
 
+
+# ── GitHub Repository Scan ────────────────────────────────────────────────────
+
+@app.route('/api/scan/github', methods=['POST'])
+@rate_limited
+@request_id_middleware
+def scan_github():
+    """
+    Accept a public GitHub repository URL, download and extract it,
+    then run the EXACT same analysis pipeline as /api/scan/zip.
+    Returns the same result schema — the frontend reuses the existing dashboard.
+    NEVER executes any code from the repository.
+    """
+    import copy as _copy
+    import math
+
+    body = request.get_json(silent=True)
+    if not body:
+        return jsonify({'error': 'Invalid JSON body. Send {"repoUrl": "https://github.com/owner/repo"}'}), 400
+
+    repo_url        = body.get('repoUrl', '')
+    usage_context   = body.get('usage_context', 'internal').lower()
+    project_license = body.get('project_license', '')
+
+    # ── 1. Validate GitHub URL ─────────────────────────────────────────────
+    from security.github_ingestion import (
+        validate_github_url, download_and_extract, GitHubIngestionError
+    )
+    try:
+        owner, repo, branch = validate_github_url(repo_url)
+    except GitHubIngestionError as e:
+        return jsonify({'error': str(e), 'source': 'github'}), e.http_status
+
+    transaction_id = str(uuid.uuid4())
+    workspace      = None
+
+    try:
+        # ── 2. Create isolated workspace ───────────────────────────────────
+        from security.zip_ingestion.extractor import create_workspace, cleanup_workspace
+        workspace = create_workspace(transaction_id)
+
+        # ── 3. Download + extract repository ──────────────────────────────
+        try:
+            project_dir = download_and_extract(owner, repo, branch, workspace)
+        except GitHubIngestionError as e:
+            return jsonify({'error': str(e), 'source': 'github'}), e.http_status
+
+        log.info("[GitHub Analyzer] Dependency files detected — starting discovery")
+
+        # ── 4. Project discovery (REUSE existing logic) ────────────────────
+        from security.zip_ingestion.project_discovery import discover_projects
+        discovery   = discover_projects(project_dir)
+        projects    = discovery['projects']
+        ambiguities = discovery['ambiguities']
+        unsupported = discovery['unsupported']
+
+        if not projects:
+            return jsonify({
+                'error': 'No supported dependency files were found in this repository.',
+                'details': ambiguities + unsupported,
+                'source': 'github',
+            }), 422
+
+        log.info("[GitHub Analyzer] Dependency files detected: %d", len(projects))
+
+        # ── 5. Detect project license ──────────────────────────────────────
+        from security.license.detector import detect_project_license
+        license_detection = detect_project_license(project_dir)
+        detected_spdx     = license_detection.spdx_id
+
+        license_conflict = None
+        if project_license and detected_spdx not in ('UNKNOWN', 'CONFLICT'):
+            from security.license.spdx import normalize as spdx_norm
+            user_spdx = spdx_norm(project_license)
+            if user_spdx != detected_spdx:
+                license_conflict = {
+                    'detected': detected_spdx,
+                    'user_provided': user_spdx,
+                    'status': 'CONFLICT',
+                    'message': 'Detected license ({}) differs from user-provided ({}).'.format(
+                        detected_spdx, user_spdx
+                    ),
+                }
+
+        effective_project_license = detected_spdx if detected_spdx not in ('UNKNOWN', 'CONFLICT') \
+                                    else (project_license or 'UNKNOWN')
+
+        # ── 6. SAST engine (reuse existing) ──────────────────────────────
+        from security.sast.engine import CustomASTEngine
+        sast_engine = CustomASTEngine()
+        sast_result = sast_engine.analyze_project(project_dir)
+
+        all_code_findings   = sast_result.get('code_findings', [])
+        all_secret_findings = sast_result.get('secret_findings', [])
+
+        # ── 7. Parse + resolve + CVE scan per project (REUSE existing) ────
+        all_vulnerabilities = []
+        all_graph_deps      = []
+        all_grouped_vulns   = []
+        all_dep_licenses    = []
+        multi_project_info  = []
+        primary_ecosystem   = 'npm'
+
+        for proj in projects:
+            eco = proj.ecosystem
+            if eco not in PARSERS:
+                log.warning("Skipping unsupported ecosystem %s for %s", eco, proj.name)
+                continue
+
+            try:
+                parsed      = PARSERS[eco](proj.manifest_content)
+                direct_deps = parsed.get('deps', [])
+                if not direct_deps:
+                    continue
+
+                graph_deps, _ = RESOLVERS[eco](direct_deps, max_depth=2)
+                vulns         = scan_tree(graph_deps, eco, proj.name, max_depth=2)
+                vulns         = add_ui_aliases(deduplicate_vulns(vulns))
+
+                all_vulnerabilities.extend(vulns)
+                all_graph_deps.extend(graph_deps)
+                all_grouped_vulns.extend(group_vulns_by_package(vulns))
+                primary_ecosystem = 'npm' if eco == 'npm-lock' else eco
+
+                try:
+                    from security.license.dep_license import get_dep_licenses
+                    dep_lics = get_dep_licenses(graph_deps, eco)
+                    all_dep_licenses.extend(dep_lics)
+                except Exception as le:
+                    log.debug("Dep license lookup skipped: %s", le)
+
+                multi_project_info.append({
+                    'name':       proj.name,
+                    'ecosystem':  eco,
+                    'packages':   _count_packages(graph_deps),
+                    'vulns':      len(vulns),
+                    'limitation': proj.limitation,
+                })
+            except Exception as e:
+                log.warning("Project %s scan failed: %s", proj.name, e)
+                multi_project_info.append({'name': proj.name, 'error': str(e)})
+
+        # ── 8. License policy evaluation (reuse existing) ─────────────────
+        license_findings = []
+        try:
+            from security.license.policy_engine import run_license_policy
+            license_findings = run_license_policy(
+                all_dep_licenses, effective_project_license,
+                usage_context, transaction_id
+            )
+        except Exception as le:
+            log.debug("License policy skipped: %s", le)
+
+        # ── 9. Correlation engine (reuse existing) ─────────────────────────
+        attack_paths   = []
+        enriched_vulns = all_vulnerabilities
+        try:
+            from correlation.engine import correlate
+            corr = correlate(sast_result, all_graph_deps, all_vulnerabilities, license_findings)
+            enriched_vulns = corr.get('enriched_vulnerabilities', all_vulnerabilities)
+            attack_paths   = corr.get('attack_paths', [])
+        except Exception as ce:
+            log.debug("Correlation skipped: %s", ce)
+
+        # ── 10. Build result (SAME schema as /api/scan/zip) ───────────────
+        counts = {'CRITICAL': 0, 'HIGH': 0, 'MEDIUM': 0, 'LOW': 0}
+        for v in enriched_vulns:
+            sev = v.get('severity', 'LOW')
+            if sev in counts:
+                counts[sev] += 1
+
+        crit_i = 40*(1-math.exp(-counts['CRITICAL']/3)) if counts['CRITICAL']>0 else 0
+        high_i = 30*(1-math.exp(-counts['HIGH']/5))     if counts['HIGH']>0     else 0
+        med_i  = 20*(1-math.exp(-counts['MEDIUM']/8))   if counts['MEDIUM']>0   else 0
+        low_i  = 10*(1-math.exp(-counts['LOW']/10))     if counts['LOW']>0      else 0
+        risk_score = min(100, round(crit_i+high_i+med_i+low_i))
+
+        if risk_score>=90:     risk_label='Critical'
+        elif risk_score>=70:   risk_label='High'
+        elif risk_score>=40:   risk_label='Medium'
+        elif risk_score>=1:    risk_label='Low'
+        else:                  risk_label='Secure'
+
+        total_packages = _count_packages(all_graph_deps)
+        graph = {
+            'name':            '{}/{}'.format(owner, repo),
+            'version':         '0.0.0',
+            'type':            'root',
+            'dependencies':    all_graph_deps,
+            'vulnerabilities': [],
+        }
+
+        code_counts = {'CRITICAL':0,'HIGH':0,'MEDIUM':0,'LOW':0}
+        for cf in all_code_findings:
+            s = cf.get('severity','LOW')
+            if s in code_counts:
+                code_counts[s] += 1
+
+        project_name = '{}/{}'.format(owner, repo)
+
+        scan_result = {
+            # ── Same contract as /api/scan/zip ──
+            'transaction_id':   transaction_id,
+            'snapshot_version': 1,
+            'status':           'COMPLETED',
+            'ecosystem':        primary_ecosystem,
+            'project_name':     project_name,
+            'summary': {
+                'risk_score':                risk_score,
+                'risk_label':                risk_label,
+                'total_packages':            total_packages,
+                'direct_dependencies':       len([d for d in all_graph_deps if d.get('type')=='direct']),
+                'transitive_dependencies':   total_packages - len([d for d in all_graph_deps if d.get('type')=='direct']),
+                'vulnerabilities':           len(enriched_vulns),
+                'critical':                  counts['CRITICAL'],
+                'high':                      counts['HIGH'],
+                'medium':                    counts['MEDIUM'],
+                'low':                       counts['LOW'],
+                'secure_package_count':      total_packages - len(all_grouped_vulns),
+                'vulnerable_package_count':  len(all_grouped_vulns),
+                'vulnerable_direct_count':   0,
+                'vulnerable_transitive_count': 0,
+                'priority_fix_count':        counts['CRITICAL']+counts['HIGH'],
+                'code_findings_count':       len(all_code_findings),
+                'secret_findings_count':     len(all_secret_findings),
+                'license_review_count':      len([f for f in license_findings if f.get('status')=='REVIEW']),
+                'attack_paths_count':        len(attack_paths),
+                'code_critical':             code_counts['CRITICAL'],
+                'code_high':                 code_counts['HIGH'],
+                'sast_files_analyzed':       sast_result.get('files_analyzed', 0),
+            },
+            'grouped_packages': _build_all_packages(all_graph_deps, all_grouped_vulns),
+            'fixes':            [v for v in enriched_vulns if v.get('fix_version')],
+            'vulnerabilities':  _copy.deepcopy(enriched_vulns),
+            'graph':            _copy.deepcopy(graph),
+            'dependency_tree':  _copy.deepcopy(graph),
+            'scan_timestamp':   int(time.time()),
+            # ── Extended fields (same as ZIP) ──
+            'code_findings':    all_code_findings,
+            'secret_findings':  all_secret_findings,
+            'license_findings': license_findings,
+            'attack_paths':     attack_paths,
+            'scan_type':        'GITHUB',
+            'source':           'github',
+            'github_repo':      '{}/{}'.format(owner, repo),
+            'projects_discovered': multi_project_info,
+            'ambiguities':      ambiguities,
+            'unsupported_manifests': unsupported,
+            'project_license':  {
+                'spdx_id':    effective_project_license,
+                'source':     license_detection.source,
+                'confidence': license_detection.confidence,
+                'conflicts':  license_detection.conflicts,
+                'license_conflict': license_conflict,
+            },
+        }
+
+        log.info(
+            "[GitHub Analyzer] Analysis completed: %s — %d vulns, "
+            "%d code findings, %d license findings",
+            project_name, len(enriched_vulns), len(all_code_findings), len(license_findings),
+        )
+
+        # Best-effort snapshot storage
+        try:
+            import gzip as _gzip
+            import psycopg2
+            from db import get_conn, get_cursor
+            compressed = _gzip.compress(json.dumps(_copy.deepcopy(scan_result)).encode('utf-8'))
+            with get_conn() as conn:
+                with get_cursor(conn) as cur:
+                    cur.execute(
+                        """INSERT INTO scan_snapshots (id, ecosystem, project_name, result)
+                           VALUES (%s, %s, %s, %s)
+                           ON CONFLICT (id) DO NOTHING""",
+                        (transaction_id, scan_result['ecosystem'],
+                         scan_result['project_name'], psycopg2.Binary(compressed))
+                    )
+        except Exception as e:
+            log.debug("GitHub snapshot storage skipped: %s", e)
+
+        log.info("[GitHub Analyzer] Temporary files cleaned")
+        return jsonify(_copy.deepcopy(scan_result))
+
+    except GitHubIngestionError as e:
+        log.warning("[GitHub Analyzer] Ingestion error: %s", e)
+        return jsonify({'error': str(e), 'source': 'github'}), e.http_status
+
+    except Exception as e:
+        log.error("[GitHub Analyzer] Unexpected error: %s", e, exc_info=True)
+        return jsonify({'error': 'GitHub scan failed. Check server logs for details.', 'source': 'github'}), 500
+
+    finally:
+        if workspace:
+            from security.zip_ingestion.extractor import cleanup_workspace
+            cleanup_workspace(workspace)
+            log.info("[GitHub Analyzer] Temporary files cleaned")
+
+
 @app.route('/api/scan-package', methods=['POST'])
 @rate_limited
 @request_id_middleware

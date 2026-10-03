@@ -8,6 +8,7 @@ import Analytics from './pages/Analytics'
 import Learn from './pages/Learn'
 import History from './pages/History'
 import ZipScan from './pages/ZipScan'
+import GitHubScan from './pages/GitHubScan'
 import ErrorBoundary from './components/ErrorBoundary'
 import SystemStatusBar, { SystemStatusFooter } from './components/SystemStatusBar'
 import SystemLogs from './components/SystemLogs'
@@ -97,15 +98,17 @@ export default function App() {
                 {/* Nav links */}
                 <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
                   {[
-                    { to: '/scan',     label: 'Scanner Studio' },
-                    { to: '/zip-scan', label: 'Repository ZIP' },
-                    { to: '/learn',    label: 'Knowledge Hub' },
-                    { to: '/history',  label: 'Audit History' },
+                    { to: '/scan',        label: 'Scanner Studio' },
+                    { to: '/zip-scan',    label: 'Repository ZIP' },
+                    { to: '/github-scan', label: 'GitHub' },
+                    { to: '/learn',       label: 'Knowledge Hub' },
+                    { to: '/history',     label: 'Audit History' },
                   ].map(({ to, label }) => (
                     <NavLink key={to} to={to} className={({ isActive }) => `nav-link${isActive ? ' active' : ''}`}>
                       {label}
                     </NavLink>
                   ))}
+
                 </div>
 
                 {/* Right side controls */}
@@ -177,6 +180,7 @@ export default function App() {
             <Route path="/learn" element={<Learn />} />
             <Route path="/history" element={<History />} />
             <Route path="/zip-scan" element={<ZipScan />} />
+            <Route path="/github-scan" element={<GitHubScan />} />
           </Routes>
         </div>
       </ErrorBoundary>

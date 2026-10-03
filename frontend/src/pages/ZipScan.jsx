@@ -265,6 +265,26 @@ export default function ZipScan() {
                 <span>Repository ZIP Audit</span>
                 <span style={{ fontSize: 10, padding: '1px 6px', borderRadius: 4, background: 'rgba(0, 212, 178, 0.15)', color: '#00D4B2', fontWeight: 700 }}>SAST</span>
               </button>
+
+              <button
+                onClick={() => navigate('/github-scan')}
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 8,
+                  padding: '8px 18px',
+                  borderRadius: 'var(--radius-sm)',
+                  border: 'none',
+                  background: 'transparent',
+                  color: 'var(--text-secondary)',
+                  fontWeight: 600,
+                  fontSize: 13.5,
+                  cursor: 'pointer',
+                  transition: 'all 0.15s ease',
+                }}
+              >
+                <span>GitHub Repository</span>
+              </button>
             </div>
           </div>
         </div>
