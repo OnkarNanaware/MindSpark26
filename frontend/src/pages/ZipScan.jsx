@@ -84,7 +84,8 @@ export default function ZipScan() {
       const res = await axios.post(`${API_BASE}/api/scan/zip`, formData, {
         timeout: 300000,   // 5 min for large projects
         signal: abortRef.current.signal,
-        headers: { 'Content-Type': 'multipart/form-data' },
+        // Do NOT override headers here — axios auto-sets multipart/form-data with boundary,
+        // and explicitly setting Content-Type would strip the Authorization header.
       })
 
       clearInterval(interval)

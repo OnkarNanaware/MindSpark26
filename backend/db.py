@@ -113,6 +113,21 @@ CREATE INDEX IF NOT EXISTS idx_snapshots_expires
 CREATE INDEX IF NOT EXISTS idx_resolver_cache_expires
     ON resolver_cache (expires_at);
 
+-- ── Users (authentication) ─────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS users (
+    id            SERIAL PRIMARY KEY,
+    username      TEXT NOT NULL UNIQUE,
+    email         TEXT NOT NULL UNIQUE,
+    password_hash TEXT NOT NULL,
+    role          TEXT NOT NULL DEFAULT 'user',   -- 'user' | 'admin'
+    created_at    TIMESTAMPTZ DEFAULT NOW(),
+    last_login    TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS idx_users_username ON users (username);
+CREATE INDEX IF NOT EXISTS idx_users_email    ON users (email);
+
 -- ── SAGE Extension: SAST + License tables ────────────────────────────────────
 
 CREATE TABLE IF NOT EXISTS code_findings (
