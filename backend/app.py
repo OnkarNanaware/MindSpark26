@@ -1,6 +1,7 @@
 from flask import Flask, request, jsonify, g
 from flask_cors import CORS
 from functools import wraps
+from auth import require_auth, register_user, login_user, generate_token, get_user_by_id
 from collections import defaultdict
 import os
 import sys
@@ -87,7 +88,7 @@ def parse_allowed_origins():
 
 ALLOWED_ORIGINS = parse_allowed_origins()
 ALLOW_VERCEL_PREVIEWS = os.environ.get('ALLOW_VERCEL_PREVIEWS', 'true').lower() == 'true'
-CORS(app, origins=ALLOWED_ORIGINS, allow_headers=['Content-Type'], methods=['GET', 'POST', 'OPTIONS'])
+CORS(app, origins=ALLOWED_ORIGINS, allow_headers=['Content-Type', 'Authorization'], methods=['GET', 'POST', 'OPTIONS'])
 
 MAX_CONTENT_SIZE = 512 * 1024
 RATE_LIMIT       = 20
@@ -324,7 +325,7 @@ def add_cors_headers(response):
     origin = request.headers.get('Origin', '')
     if is_origin_allowed(origin):
         response.headers['Access-Control-Allow-Origin'] = origin.rstrip('/')
-        response.headers['Access-Control-Allow-Headers'] = 'Content-Type'
+        response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
         response.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
         response.headers['Vary'] = 'Origin'
     # Security headers
@@ -504,7 +505,60 @@ def run_analysis(body):
 
     return jsonify(copy.deepcopy(scan_result))
 
+# ── Auth Routes ───────────────────────────────────────────────────────────────
+
+@app.route('/api/auth/register', methods=['POST'])
+def auth_register():
+    body = request.get_json(silent=True) or {}
+    username = (body.get('username') or '').strip()
+    email    = (body.get('email')    or '').strip()
+    password = (body.get('password') or '').strip()
+    try:
+        user = register_user(username, email, password)
+        token = generate_token(user['id'], user['username'], user.get('role', 'user'))
+        return jsonify({'token': token, 'user': {
+            'id': user['id'], 'username': user['username'],
+            'email': user['email'], 'role': user.get('role', 'user'),
+        }}), 201
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    except Exception as e:
+        log.error(f"Register error: {e}")
+        return jsonify({'error': 'Registration failed. Please try again.'}), 500
+
+
+@app.route('/api/auth/login', methods=['POST'])
+def auth_login():
+    body = request.get_json(silent=True) or {}
+    identifier = (body.get('username') or body.get('email') or '').strip()
+    password   = (body.get('password') or '').strip()
+    if not identifier or not password:
+        return jsonify({'error': 'Username/email and password are required.'}), 400
+    try:
+        user  = login_user(identifier, password)
+        token = generate_token(user['id'], user['username'], user.get('role', 'user'))
+        return jsonify({'token': token, 'user': {
+            'id': user['id'], 'username': user['username'],
+            'email': user['email'], 'role': user.get('role', 'user'),
+        }})
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 401
+    except Exception as e:
+        log.error(f"Login error: {e}")
+        return jsonify({'error': 'Login failed. Please try again.'}), 500
+
+
+@app.route('/api/auth/me', methods=['GET'])
+@require_auth
+def auth_me():
+    user = get_user_by_id(g.user['id'])
+    if not user:
+        return jsonify({'error': 'User not found.'}), 404
+    return jsonify({'user': user})
+
+
 @app.route('/api/scan', methods=['POST'])
+@require_auth
 @rate_limited
 @request_id_middleware
 def scan():
@@ -519,6 +573,7 @@ def scan():
 MAX_ZIP_UPLOAD_BYTES = 50 * 1024 * 1024   # 50 MB
 
 @app.route('/api/scan/zip', methods=['POST'])
+@require_auth
 @rate_limited
 @request_id_middleware
 def scan_zip():
@@ -822,6 +877,7 @@ def scan_zip():
 
 
 @app.route('/api/scan-package', methods=['POST'])
+@require_auth
 @rate_limited
 @request_id_middleware
 def scan_package_deep():
@@ -952,6 +1008,7 @@ def scan_package_deep():
         return jsonify({'error': 'Deep scan failed. Check server logs for details.'}), 500
 
 @app.route('/api/scans/<scan_id>', methods=['GET'])
+@require_auth
 @request_id_middleware
 def get_scan(scan_id):
     """Retrieve a stored scan snapshot by its transaction ID (used by shareable links)."""
@@ -977,6 +1034,7 @@ def get_scan(scan_id):
         return jsonify({'error': 'Failed to retrieve scan'}), 500
 
 @app.route('/api/cve/<cve_id>', methods=['GET'])
+@require_auth
 @rate_limited
 @request_id_middleware
 def get_cve(cve_id):
@@ -997,6 +1055,7 @@ def get_cve(cve_id):
     return jsonify({'error': 'CVE not found'}), 404
 
 @app.route('/api/export/pdf', methods=['POST'])
+@require_auth
 @rate_limited
 @request_id_middleware
 def export_pdf():
@@ -1017,6 +1076,7 @@ def export_pdf():
         return jsonify({'error': 'PDF generation failed. Check server logs for details.'}), 500
 
 @app.route('/api/export/csv', methods=['POST'])
+@require_auth
 @rate_limited
 @request_id_middleware
 def export_csv():

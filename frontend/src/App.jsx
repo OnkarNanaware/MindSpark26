@@ -1,4 +1,4 @@
-import { BrowserRouter, Routes, Route, Navigate, useLocation, NavLink } from 'react-router-dom'
+import { Routes, Route, Navigate, useLocation, NavLink } from 'react-router-dom'
 import { createContext, useContext, useState, useEffect } from 'react'
 import axios from 'axios'
 import Landing from './pages/Landing'
@@ -8,15 +8,27 @@ import Analytics from './pages/Analytics'
 import Learn from './pages/Learn'
 import History from './pages/History'
 import ZipScan from './pages/ZipScan'
+import Login from './pages/Login'
 import ErrorBoundary from './components/ErrorBoundary'
 import SystemStatusBar, { SystemStatusFooter } from './components/SystemStatusBar'
 import SystemLogs from './components/SystemLogs'
+import ProtectedRoute from './components/ProtectedRoute'
+import { AuthProvider, useAuth } from './context/AuthContext'
 import API_BASE from './config'
 
 export const ScanContext = createContext({ scanning: false, scanProject: '', setScanning: () => {}, setScanProject: () => {} })
 export const useScan = () => useContext(ScanContext)
 
 export default function App() {
+  return (
+    <AuthProvider>
+      <AppInner />
+    </AuthProvider>
+  )
+}
+
+function AppInner() {
+  const { user, logout } = useAuth()
   const [scanning, setScanning] = useState(false)
   const [scanProject, setScanProject] = useState('')
   const [theme, setTheme] = useState(() => {
@@ -145,6 +157,21 @@ export default function App() {
                     </NavLink>
                   )}
 
+                  {/* User avatar + logout */}
+                  {user && (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '4px 10px', background: 'var(--bg-elevated)', border: '1px solid var(--border)', borderRadius: 'var(--radius)' }}>
+                        <span style={{ width: 22, height: 22, borderRadius: '50%', background: 'linear-gradient(135deg,#00D4B2,#60A5FA)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11, fontWeight: 700, color: '#fff' }}>
+                          {user.username?.[0]?.toUpperCase()}
+                        </span>
+                        <span style={{ fontSize: 12, color: 'var(--text)', fontWeight: 600 }}>{user.username}</span>
+                      </div>
+                      <button onClick={logout} title="Sign out" style={{ background: 'rgba(244,63,94,0.08)', border: '1px solid rgba(244,63,94,0.2)', color: 'var(--critical)', cursor: 'pointer', fontSize: 12, padding: '5px 10px', borderRadius: 'var(--radius)', fontWeight: 600, transition: 'all 0.15s' }}>
+                        Sign out
+                      </button>
+                    </div>
+                  )}
+
                   {/* Theme toggle */}
                   <button onClick={toggleTheme} aria-label={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
                     title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
@@ -171,15 +198,16 @@ export default function App() {
 
           <Routes>
             <Route path="/" element={<Landing theme={theme} toggleTheme={toggleTheme} />} />
-            <Route path="/scan" element={<Dashboard />} />
-            <Route path="/scanning" element={<Scanning />} />
-            <Route path="/results" element={<Analytics />} />
-            <Route path="/learn" element={<Learn />} />
-            <Route path="/history" element={<History />} />
-            <Route path="/zip-scan" element={<ZipScan />} />
+            <Route path="/login" element={<Login />} />
+            <Route path="/scan"     element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
+            <Route path="/scanning" element={<ProtectedRoute><Scanning /></ProtectedRoute>} />
+            <Route path="/results"  element={<ProtectedRoute><Analytics /></ProtectedRoute>} />
+            <Route path="/learn"    element={<ProtectedRoute><Learn /></ProtectedRoute>} />
+            <Route path="/history"  element={<ProtectedRoute><History /></ProtectedRoute>} />
+            <Route path="/zip-scan" element={<ProtectedRoute><ZipScan /></ProtectedRoute>} />
           </Routes>
         </div>
       </ErrorBoundary>
     </ScanContext.Provider>
   )
-}
+}
