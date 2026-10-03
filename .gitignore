@@ -1,0 +1,86 @@
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
+coverage/
+
+# Virtual environments
+venv/
+.venv/
+backend/venv/
+*.venv/
+
+# ── Node ──────────────────────────────────────────────────────────────────────
+node_modules/
+frontend/node_modules/
+tests/node_modules/
+
+# Build output
+dist/
+build/
+frontend/dist/
+frontend/.vite/
+
+# ── Environment & Secrets ─────────────────────────────────────────────────────
+.env
+.env.*
+!.env.example
+!**/.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.pub
+*_rsa
+*_ed25519
+*id_rsa*
+*id_ed25519*
+secrets/
+config.secret.*
+
+# ── Logs ──────────────────────────────────────────────────────────────────────
+*.log
+logs/
+backend/backend.log
+frontend/frontend.log
+
+# ── Runtime ───────────────────────────────────────────────────────────────────
+.backend.pid
+.frontend.pid
+
+# ── OS ────────────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# ── Playwright ────────────────────────────────────────────────────────────────
+playwright-report/
+test-results/
+tests/test-results/
+tests/playwright-report/
+blob-report/
+playwright/.cache/
+playwright/.auth/
+*.trace
+*.webm
+
+
+# ── OSV seed ZIPs (downloaded locally, not committed) ─────────────────────
+/tmp/npm.zip
+/tmp/pypi.zip
+/tmp/maven.zip
+*.zip
+
+
+# ── Seed logs ──────────────────────────────────────────────────────────────
+/tmp/seed_*.log
+seed_*.log

@@ -1,0 +1,153 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# SAGE Dependency Security Scan
+#
+# What this does:
+#   1. On every pull-request or push to main/master, scans your dependency
+#      manifest (package.json / requirements.txt / pom.xml) via the SAGE API.
+#   2. Posts a rich Markdown security report comment to the PR (risk score,
+#      CVE table, CISA KEV active-exploit alerts, link to full visual report).
+#   3. Exposes structured outputs (risk-score, critical, high, kev-count) that
+#      downstream steps can gate on.
+#
+# Required secrets (Settings → Secrets and variables → Actions):
+#   SAGE_API_URL  — URL of your running SAGE server,
+#                   e.g. https://your-sage.example.com
+#                   Defaults to http://localhost:3000 when unset (local only).
+#
+# GITHUB_TOKEN is auto-provided — no manual setup needed.
+# ─────────────────────────────────────────────────────────────────────────────
+
+name: SAGE Dependency Security Scan
+
+on:
+  pull_request:
+    branches: [main, master]
+    paths:
+      - 'package.json'
+      - 'package-lock.json'
+      - 'requirements.txt'
+      - 'pom.xml'
+      - 'action/**'
+      - '.github/workflows/sage-security-scan.yml'
+  push:
+    branches: [main, master]
+    paths:
+      - 'package.json'
+      - 'package-lock.json'
+      - 'requirements.txt'
+      - 'pom.xml'
+  workflow_dispatch:
+    inputs:
+      manifest_file:
+        description: 'Manifest file to scan (leave blank for auto-detect)'
+        required: false
+        default: 'package.json'
+      block_on_critical:
+        description: 'Fail the build if critical CVEs are found?'
+        required: false
+        default: 'false'
+        type: choice
+        options: ['true', 'false']
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: sage-scan-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ── Job 1: Run the SAGE scan ─────────────────────────────────────────────────
+  sage-scan:
+    name: SAGE Security Scan
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    outputs:
+      risk-score: ${{ steps.scan.outputs.risk-score }}
+      critical:   ${{ steps.scan.outputs.critical }}
+      high:       ${{ steps.scan.outputs.high }}
+      kev-count:  ${{ steps.scan.outputs.kev-count }}
+      scan-url:   ${{ steps.scan.outputs.scan-url }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Run SAGE scan
+        id: scan
+        uses: ./
+        with:
+          manifest-file: ${{ github.event.inputs.manifest_file || 'package.json' }}
+          api-url:       ${{ secrets.SAGE_API_URL || 'http://localhost:3000' }}
+          github-token:  ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Print scan summary
+        shell: bash
+        run: |
+          echo ""
+          echo "==========================================="
+          echo "  SAGE Scan Results"
+          echo "==========================================="
+          echo "  Risk Score : ${{ steps.scan.outputs.risk-score }}/100"
+          echo "  Critical   : ${{ steps.scan.outputs.critical }}"
+          echo "  High       : ${{ steps.scan.outputs.high }}"
+          echo "  KEV (live) : ${{ steps.scan.outputs.kev-count }} actively exploited"
+          echo "  Report URL : ${{ steps.scan.outputs.scan-url || 'N/A' }}"
+          echo "==========================================="
+          echo ""
+
+  # ── Job 2: Policy gate ───────────────────────────────────────────────────────
+  policy-gate:
+    name: Security Policy Gate
+    runs-on: ubuntu-latest
+    needs: sage-scan
+    timeout-minutes: 2
+
+    steps:
+      - name: Enforce security policy
+        shell: bash
+        env:
+          RISK_SCORE:        ${{ needs.sage-scan.outputs.risk-score }}
+          CRITICAL_COUNT:    ${{ needs.sage-scan.outputs.critical }}
+          HIGH_COUNT:        ${{ needs.sage-scan.outputs.high }}
+          KEV_COUNT:         ${{ needs.sage-scan.outputs.kev-count }}
+          BLOCK_ON_CRITICAL: ${{ github.event.inputs.block_on_critical || 'false' }}
+          MAX_RISK_SCORE:    75
+          MAX_CRITICAL_CVSS: 0
+        run: |
+          echo "Evaluating security policy..."
+          echo "  Risk Score      : ${RISK_SCORE:-0}/100  (max: ${MAX_RISK_SCORE})"
+          echo "  Critical CVEs   : ${CRITICAL_COUNT:-0}  (max: ${MAX_CRITICAL_CVSS})"
+          echo "  High CVEs       : ${HIGH_COUNT:-0}"
+          echo "  CISA KEV (live) : ${KEV_COUNT:-0}"
+          echo ""
+
+          FAILED=0
+
+          # Always block on CISA KEV hits — real-world active attacks
+          if [ "${KEV_COUNT:-0}" -gt 0 ]; then
+            echo "::error::CISA KEV Alert: ${KEV_COUNT} actively exploited CVE(s) found."
+            echo "::error::These packages are being exploited in the wild RIGHT NOW."
+            echo "::error::Upgrade immediately before merging."
+            FAILED=1
+          fi
+
+          # Block on critical CVEs when enforcement is enabled
+          if [ "${BLOCK_ON_CRITICAL}" = "true" ] && [ "${CRITICAL_COUNT:-0}" -gt "${MAX_CRITICAL_CVSS}" ]; then
+            echo "::error::Build blocked: ${CRITICAL_COUNT} critical CVE(s) found."
+            FAILED=1
+          fi
+
+          # Block on excessive composite risk score when enforcement is enabled
+          if [ "${RISK_SCORE:-0}" -gt "${MAX_RISK_SCORE}" ] && [ "${BLOCK_ON_CRITICAL}" = "true" ]; then
+            echo "::error::Build blocked: Risk score ${RISK_SCORE}/100 exceeds threshold ${MAX_RISK_SCORE}."
+            FAILED=1
+          fi
+
+          if [ "${FAILED}" -eq 0 ]; then
+            echo "Security policy check passed."
+          else
+            exit 1
+          fi
