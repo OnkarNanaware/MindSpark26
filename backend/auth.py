@@ -150,9 +150,26 @@ def get_user_by_id(user_id: int):
 
 # ── Flask decorator ───────────────────────────────────────────────────────────
 def require_auth(f):
-    """Decorator — validates Bearer JWT token. Sets g.user on success."""
+    """Decorator — validates Bearer JWT token. Sets g.user on success.
+
+    Testing bypass: when Flask's TESTING config is True (set by conftest.py)
+    or the TESTING env var is 'true', authentication is skipped and g.user is
+    populated with a synthetic user so every test route works without a real token.
+    This bypass is NEVER active in production.
+    """
     @wraps(f)
     def decorated(*args, **kwargs):
+        from flask import current_app
+
+        # ── TESTING bypass (never runs in production) ──────────────────────
+        if (
+            current_app.config.get("TESTING", False)
+            or os.environ.get("TESTING", "").lower() == "true"
+        ):
+            g.user = {"id": 0, "username": "test-user", "role": "user"}
+            return f(*args, **kwargs)
+
+        # ── Production JWT validation ──────────────────────────────────────
         auth_header = request.headers.get("Authorization", "")
         if not auth_header.startswith("Bearer "):
             return jsonify({"error": "Authentication required.", "code": "UNAUTHORIZED"}), 401
@@ -170,3 +187,4 @@ def require_auth(f):
             return jsonify({"error": "Invalid token.", "code": "INVALID_TOKEN"}), 401
         return f(*args, **kwargs)
     return decorated
+

@@ -347,16 +347,23 @@ def run_analysis(body):
     if request.content_length and request.content_length > MAX_CONTENT_SIZE * 2:
         return jsonify({'error': 'Request too large (max 512KB)'}), 413
 
-    content  = body.get('content', '')
-    filename = body.get('filename') or filename_for_ecosystem(body.get('ecosystem', 'npm'))
+    content          = body.get('content', '')
+    body_ecosystem   = (body.get('ecosystem') or '').strip().lower()
+    filename         = body.get('filename') or filename_for_ecosystem(body_ecosystem or 'npm')
 
     error, status = validate_content(content, filename)
     if error:
         return jsonify({'error': error}), status
 
-    ecosystem = detect_ecosystem(filename)
+    # Trust the ecosystem the frontend sends; only fall back to filename detection
+    # when no explicit ecosystem is provided (e.g. direct API calls).
+    VALID_ECOSYSTEMS = {'npm', 'pypi', 'maven', 'npm-lock'}
+    if body_ecosystem in VALID_ECOSYSTEMS:
+        ecosystem = body_ecosystem
+    else:
+        ecosystem = detect_ecosystem(filename)
 
-    # Auto-detect npm lock-file shape from content
+    # Auto-detect npm lock-file shape from content (overrides both sources)
     if ecosystem == 'npm':
         try:
             import json as _json
@@ -375,7 +382,11 @@ def run_analysis(body):
     direct_deps  = parsed.get('deps', [])
 
     if not direct_deps:
-        return jsonify({'error': 'No dependencies found'}), 400
+        return jsonify({
+            'error': 'No dependencies found in this file. '
+                     'If this is an npm workspaces root, paste the package.json '
+                     'from one of the individual packages instead.'
+        }), 400
     if len(direct_deps) > MAX_DIRECT_DEPS:
         return jsonify({'error': f'Too many dependencies (max {MAX_DIRECT_DEPS})'}), 400
 

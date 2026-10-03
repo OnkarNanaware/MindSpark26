@@ -46,6 +46,7 @@ export default function Scanning() {
         const res = await axios.post(`${API_BASE}/api/scan`, {
           content: locationState.code,
           ecosystem: locationState.ecosystem,
+          filename: locationState.filename || undefined,
         }, {
           timeout: 120000,
           signal: abortControllerRef.current.signal
@@ -67,7 +68,8 @@ export default function Scanning() {
         if (typeof setScanning === 'function') setScanning(false)
 
         const status = err?.response?.status
-        let msg = 'Scan failed — please try again'
+        const apiMsg = err?.response?.data?.error
+        let msg = apiMsg || 'Scan failed — please try again'
         if (status === 408) msg = 'Scan timed out — try a smaller file'
         if (status === 413) msg = 'File too large — maximum 512KB'
         if (status === 429) msg = 'Too many requests — wait 60s and try again'

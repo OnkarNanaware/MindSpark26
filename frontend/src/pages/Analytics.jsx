@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from 'react'
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom'
+import axios from 'axios'
 import API_BASE from '../config'
 import DependencyGraph from '../components/DependencyGraph'
 import Tooltip from '../components/Tooltip'
@@ -310,15 +311,13 @@ export default function Analytics() {
   const exportReport = async (type) => {
     setExportStatus('loading')
     try {
-      const res = await fetch(`${API_BASE}/api/export/${type}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(result)
-      })
-      if (!res.ok) throw new Error(`Export failed: ${res.status}`)
-      const blob = await res.blob()
-      const url  = URL.createObjectURL(blob)
-      // Both PDF and CSV download directly now
+      // Use axios so the auth interceptor adds the Authorization header automatically
+      const res = await axios.post(
+        `${API_BASE}/api/export/${type}`,
+        result,
+        { responseType: 'blob', timeout: 60000 }
+      )
+      const url = URL.createObjectURL(res.data)
       Object.assign(document.createElement('a'), {
         href: url,
         download: `sca-report-${snapshot?.project_name || 'report'}.${type}`

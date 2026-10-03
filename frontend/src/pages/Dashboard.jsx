@@ -174,7 +174,7 @@ export default function Dashboard() {
   const analyze = async (content, filename) => {
     setError('')
     const detectedEco = detectEcosystem(filename)
-    navigate('/scanning', { state: { code: content, ecosystem: detectedEco?.label?.toLowerCase() || 'npm' } })
+    navigate('/scanning', { state: { code: content, ecosystem: detectedEco?.label?.toLowerCase() || 'npm', filename: filename || undefined } })
   }
 
   const loadPreset = (key) => {
